@@ -10,6 +10,13 @@ spring:
         uri: lb://AUTH-SERVICE
         predicates:
           - Path=/api/auth/**
+      - id: profile-service
+        uri: lb://PROFILE-SERVICE
+        predicates:
+          - Path=/api/profile/**
+jwt:
+  secret: KjFhT3JXc2pYNkpQRVZ2QlFid0Z5anNTV2d3NUZHQmQ=
+
 
 eureka:
   client:

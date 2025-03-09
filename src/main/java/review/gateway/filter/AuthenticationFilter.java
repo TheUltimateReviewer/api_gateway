@@ -2,6 +2,7 @@ package review.gateway.filter;
 
 
 
+import io.jsonwebtoken.Claims;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
@@ -11,13 +12,17 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
+import review.gateway.Services.JwtUtil;
+
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 @Component
 public class AuthenticationFilter implements GlobalFilter {
 
     @Autowired
-    private WebClient.Builder webClientBuilder;
+    private JwtUtil jwtUtil;
 
     // Rutas públicas que no requieren autenticación
     private static final List<String> EXCLUDED_PATHS = List.of(
@@ -34,57 +39,87 @@ public class AuthenticationFilter implements GlobalFilter {
             return chain.filter(exchange);
         }
 
-        // Si no hay token, rechazar con 401 Unauthorized
+        // Extraer el header de autorización
         List<String> authHeaders = exchange.getRequest().getHeaders().get(HttpHeaders.AUTHORIZATION);
         if (authHeaders == null || authHeaders.isEmpty()) {
             exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
             return exchange.getResponse().setComplete();
         }
 
+        // Se espera que el token venga con el prefijo "Bearer "
         String token = authHeaders.get(0);
-
-        // Validar el token llamando al servicio de autenticación
-        return webClientBuilder.build()
-                .get()
-                .uri("http://AUTH-SERVICE/api/auth/validate?token=" + token)
-                .retrieve()
-                .bodyToMono(TokenValidationResponse.class)
-                .flatMap(response -> {
-                    if (!response.isValid()) {
-                        // Si el token no es válido, rechazar con 401 Unauthorized
-                        exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
-                        return exchange.getResponse().setComplete();
-                    }
-
-                    // ✅ Si el token es válido, pasar roles y permisos a los headers
-                    exchange.getRequest().mutate()
-                            .header("X-User-Role", response.getRole().get(0).getAuthority())
-                            .header("X-User-Permissions", String.join(",", response.getPermissions()))
-                            .build();
-
-                    return chain.filter(exchange);
-                })
-                .onErrorResume(error -> {
-                    exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
-                    return exchange.getResponse().setComplete();
-                });
-    }
-
-    private static class TokenValidationResponse {
-        private List<Role> role;
-        private String username;
-        private List<String> permissions;
-        private boolean valid;
-
-        public List<Role> getRole() { return role; }
-        public String getUsername() { return username; }
-        public List<String> getPermissions() { return permissions; }
-        public boolean isValid() { return valid; }
-
-        private static class Role {
-            private String authority;
-            public String getAuthority() { return authority; }
+        if (token.startsWith("Bearer ")) {
+            token = token.substring(7);
         }
+
+        // Validar el token
+        if (!jwtUtil.isTokenValid(token)) {
+            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
+            return exchange.getResponse().setComplete();
+        }
+
+        // Extraer claims
+        Claims claims = jwtUtil.getClaimsFromToken(token);
+        if (claims != null) {
+            String username = claims.getSubject();
+            String userId = claims.get("userId", String.class);
+            String profileId = claims.get("profileId", String.class);
+            // Se asume que roles y permisos fueron agregados como listas al generar el token
+            List<String> roles = claims.get("roles", List.class);
+            List<String> permissions = claims.get("permissions", List.class);
+
+            Object rolesObj = claims.get("roles");
+            String rolesHeader = "";
+            if (rolesObj instanceof List<?>) {
+                List<?> rolesList = (List<?>) rolesObj;
+                rolesHeader = rolesList.stream()
+                        .map(role -> {
+                            if (role instanceof String) {
+                                return (String) role;
+                            } else if (role instanceof Map<?,?>) {
+                                Map<?,?> roleMap = (Map<?,?>) role;
+                                Object valor = roleMap.get("role"); // Ajusta la clave según la estructura
+                                return valor != null ? valor.toString() : "";
+                            } else {
+                                return role != null ? role.toString() : "";
+                            }
+                        })
+                        .collect(Collectors.joining(","));
+            }
+
+
+            Object permissionsObj = claims.get("permissions");
+            String permissionsHeader = "";
+            if (permissionsObj instanceof List<?>) {
+                List<?> permissionsList = (List<?>) permissionsObj;
+                permissionsHeader = permissionsList.stream()
+                        .map(perm -> {
+                            if (perm instanceof String) {
+                                return (String) perm;
+                            } else if (perm instanceof Map<?,?>) {
+                                Map<?,?> permMap = (Map<?,?>) perm;
+                                Object valor = permMap.get("permission"); // Ajusta la clave según la estructura
+                                return valor != null ? valor.toString() : "";
+                            } else {
+                                return perm != null ? perm.toString() : "";
+                            }
+                        })
+                        .collect(Collectors.joining(","));
+            }
+
+
+
+            // Agregar la información extra a los headers para que los microservicios la reciban
+            exchange.getRequest().mutate()
+                    .header("X-Username", username != null ? username : "")
+                    .header("X-User-Id", userId != null ? userId : "")
+                    .header("X-Profile-Id", profileId != null ? profileId : "")
+                    .header("X-Roles", rolesHeader)
+                    .header("X-Permissions", permissionsHeader)
+                    .build();
+        }
+
+        return chain.filter(exchange);
     }
 
 }
