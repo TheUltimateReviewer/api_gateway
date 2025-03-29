@@ -8,8 +8,8 @@ import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.stereotype.Component;
-import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 import review.gateway.Services.JwtUtil;
@@ -62,8 +62,11 @@ public class AuthenticationFilter implements GlobalFilter {
         Claims claims = jwtUtil.getClaimsFromToken(token);
         if (claims != null) {
             String username = claims.getSubject();
-            String userId = claims.get("userId", String.class);
-            String profileId = claims.get("profileId", String.class);
+            Integer userIdInt = claims.get("user_id", Integer.class);
+            String userId = userIdInt != null ? String.valueOf(userIdInt) : "";
+            Integer profileIdInt = claims.get("profile_id", Integer.class);
+            String profileId = profileIdInt != null ? String.valueOf(profileIdInt) : "";
+
             // Se asume que roles y permisos fueron agregados como listas al generar el token
             List<String> roles = claims.get("roles", List.class);
             List<String> permissions = claims.get("permissions", List.class);
@@ -78,7 +81,7 @@ public class AuthenticationFilter implements GlobalFilter {
                                 return (String) role;
                             } else if (role instanceof Map<?,?>) {
                                 Map<?,?> roleMap = (Map<?,?>) role;
-                                Object valor = roleMap.get("role"); // Ajusta la clave según la estructura
+                                Object valor = roleMap.get("role");
                                 return valor != null ? valor.toString() : "";
                             } else {
                                 return role != null ? role.toString() : "";
@@ -98,7 +101,7 @@ public class AuthenticationFilter implements GlobalFilter {
                                 return (String) perm;
                             } else if (perm instanceof Map<?,?>) {
                                 Map<?,?> permMap = (Map<?,?>) perm;
-                                Object valor = permMap.get("permission"); // Ajusta la clave según la estructura
+                                Object valor = permMap.get("permission");
                                 return valor != null ? valor.toString() : "";
                             } else {
                                 return perm != null ? perm.toString() : "";
@@ -110,13 +113,18 @@ public class AuthenticationFilter implements GlobalFilter {
 
 
             // Agregar la información extra a los headers para que los microservicios la reciban
-            exchange.getRequest().mutate()
+            ServerHttpRequest mutatedRequest = exchange.getRequest().mutate()
                     .header("X-Username", username != null ? username : "")
                     .header("X-User-Id", userId != null ? userId : "")
                     .header("X-Profile-Id", profileId != null ? profileId : "")
                     .header("X-Roles", rolesHeader)
                     .header("X-Permissions", permissionsHeader)
                     .build();
+
+            ServerWebExchange mutatedExchange = exchange.mutate().request(mutatedRequest).build();
+
+            return chain.filter(mutatedExchange);
+
         }
 
         return chain.filter(exchange);
